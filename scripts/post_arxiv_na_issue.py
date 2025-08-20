@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, sys, time, textwrap, html, re
-import feedparser
-import requests
+import os, sys, time, textwrap, html, re, json
+import urllib.request, urllib.parse
+from types import SimpleNamespace
 from datetime import datetime, timezone
-from dateutil import parser as dtparser
+from typing import List
+import xml.etree.ElementTree as ET
 
 ARXIV_API_URL = "http://export.arxiv.org/api/query"
 SEARCH_QUERY = '(cat:math.NA OR cat:cs.NA)'
@@ -20,19 +21,33 @@ def iso_ymd(dt: datetime) -> str:
 def today_utc_ymd() -> str:
     return iso_ymd(datetime.now(timezone.utc))
 
-def github_request(method: str, url: str, token: str, json=None):
+def github_request(method: str, url: str, token: str, json_data=None):
+    data_bytes = None
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
     }
-    resp = requests.request(method, url, headers=headers, json=json, timeout=30)
-    if resp.status_code >= 300:
-        raise RuntimeError(f"GitHub API error {resp.status_code}: {resp.text}")
-    if resp.status_code == 204:
-        return {}
-    return resp.json()
+    if json_data is not None:
+        data_bytes = json.dumps(json_data).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method.upper())
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        status = resp.getcode()
+        body = resp.read().decode()
+        if status >= 300:
+            raise RuntimeError(f"GitHub API error {status}: {body}")
+        if status == 204:
+            return {}
+        return json.loads(body)
 
 # ---------- arXiv fetch & parse ----------
+
+def _parse_arxiv_date(s: str) -> datetime:
+    try:
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except Exception:
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+
 
 def fetch_entries():
     """ submittedDate 降順→ published(UTC) が“今日”のみ採用。重複ID排除。 """
@@ -44,22 +59,49 @@ def fetch_entries():
         "sortOrder": "descending",
     }
     time.sleep(1.0)  # polite
-    q = "&".join(f"{k}={requests.utils.quote(str(v))}" for k, v in params.items())
-    feed = feedparser.parse(f"{ARXIV_API_URL}?{q}")
-    entries = getattr(feed, "entries", [])
+    q = urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        f"{ARXIV_API_URL}?{q}",
+        headers={"User-Agent": "arxiv-na-script (mailto:example@example.com)"},
+    )
+    with urllib.request.urlopen(req) as resp:
+        xml = resp.read()
+    root = ET.fromstring(xml)
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
     today = today_utc_ymd()
-
     seen = set()
     todays = []
-    for e in entries:
-        pub = dtparser.parse(getattr(e, "published", ""))
-        if iso_ymd(pub.astimezone(timezone.utc)) != today:
+    for node in root.findall("atom:entry", ns):
+        pub_text = node.findtext("atom:published", default="", namespaces=ns)
+        pub = _parse_arxiv_date(pub_text)
+        if iso_ymd(pub) != today:
             continue
-        eid = getattr(e, "id", "").strip()
+        eid = node.findtext("atom:id", default="", namespaces=ns).strip()
         if eid and eid in seen:
             continue
         seen.add(eid)
-        todays.append(e)
+        title = node.findtext("atom:title", default="", namespaces=ns)
+        summary = node.findtext("atom:summary", default="", namespaces=ns)
+        authors = []
+        for a in node.findall("atom:author", ns):
+            name = a.findtext("atom:name", default="", namespaces=ns)
+            if name:
+                authors.append(SimpleNamespace(name=name))
+        tags = []
+        for c in node.findall("atom:category", ns):
+            term = c.attrib.get("term", "").strip()
+            if term:
+                tags.append(SimpleNamespace(term=term))
+        todays.append(
+            SimpleNamespace(
+                id=eid,
+                title=title,
+                summary=summary,
+                published=pub_text,
+                authors=authors,
+                tags=tags,
+            )
+        )
     return todays
 
 def detect_categories(e) -> list:
@@ -155,7 +197,7 @@ def rule_based_summary(abstract: str):
 
 # ---------- Issue layout ----------
 
-def badges(cats: list[str]) -> str:
+def badges(cats: List[str]) -> str:
     tags = []
     for c in cats:
         if c == "math.NA": tags.append("`math.NA`")
@@ -251,11 +293,11 @@ def create_or_update_issue(repo: str, token: str, title: str, body: str, labels=
         issue_url = existing["url"]
         current_labels = [l["name"] for l in existing.get("labels", [])]
         label_set = sorted(set(current_labels) | set(labels))
-        github_request("PATCH", issue_url, token, json={"body": body, "labels": label_set})
+        github_request("PATCH", issue_url, token, json_data={"body": body, "labels": label_set})
         return existing["html_url"]
     else:
         url = f"https://api.github.com/repos/{repo}/issues"
-        data = github_request("POST", url, token, json={"title": title, "body": body, "labels": labels})
+        data = github_request("POST", url, token, json_data={"title": title, "body": body, "labels": labels})
         return data["html_url"]
 
 # ---------- main ----------
