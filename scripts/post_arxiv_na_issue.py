@@ -6,6 +6,7 @@ import feedparser
 import requests
 from datetime import datetime, timezone
 from dateutil import parser as dtparser
+from typing import List
 
 ARXIV_API_URL = "http://export.arxiv.org/api/query"
 SEARCH_QUERY = '(cat:math.NA OR cat:cs.NA)'
@@ -155,7 +156,7 @@ def rule_based_summary(abstract: str):
 
 # ---------- Issue layout ----------
 
-def badges(cats: list[str]) -> str:
+def badges(cats: List[str]) -> str:
     tags = []
     for c in cats:
         if c == "math.NA": tags.append("`math.NA`")
