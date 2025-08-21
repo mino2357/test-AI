@@ -5,6 +5,10 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -14,7 +18,16 @@ jobs:
         with:
           python-version: '3.x'
       - name: Post today's arXiv NA papers
+        id: post
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python scripts/post_arxiv_na_issue.py
+
+      - name: Comment workflow run link
+        if: ${{ steps.post.outputs.issue_number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/issues/${{ steps.post.outputs.issue_number }}/comments \
+            -f body="Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
