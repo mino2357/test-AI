@@ -364,7 +364,7 @@ def main():
     if gh_output:
         with open(gh_output, "a", encoding="utf-8") as fh:
             fh.write(f"issue_number={issue_number}\n")
-            fh.write(f"issue_url={issue_url}\n")
+            fh.write(f"issue_url={issue_url}\n")￥
 
     print(f"Done. Issue: {issue_url}")
 
