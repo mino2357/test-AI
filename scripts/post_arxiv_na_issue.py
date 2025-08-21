@@ -297,7 +297,7 @@ def build_issue_body(entries, date_str: str):
             details.append(abstract_raw.strip() + "\n")
         if key_math:
             details.append("**Key formula**\n\n")
-            details.append(key_math + "\n")
+            details.append(key_math + "\n\n")
         details.append("</details>\n")
         out.append("\n".join(details))
 
