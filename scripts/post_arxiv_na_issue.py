@@ -334,11 +334,11 @@ def create_or_update_issue(repo: str, token: str, title: str, body: str, labels=
         current_labels = [l["name"] for l in existing.get("labels", [])]
         label_set = sorted(set(current_labels) | set(labels))
         github_request("PATCH", issue_url, token, json_data={"body": body, "labels": label_set})
-        return existing["html_url"]
+        return existing["html_url"], existing["number"]
     else:
         url = f"https://api.github.com/repos/{repo}/issues"
         data = github_request("POST", url, token, json_data={"title": title, "body": body, "labels": labels})
-        return data["html_url"]
+        return data["html_url"], data["number"]
 
 # ---------- main ----------
 
@@ -358,8 +358,17 @@ def main():
 
     body = build_issue_body(entries, target_date)
     title = f"arXiv NA - {target_date}"
-    url = create_or_update_issue(repo, token, title, body, labels=LABELS)
-    print(f"Done. Issue: {url}")
+    issue_url, issue_number = create_or_update_issue(repo, token, title, body, labels=LABELS)
+
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    if run_id:
+        run_url = f"{server}/{repo}/actions/runs/{run_id}"
+        comment = f"Workflow run: {run_url}"
+        comment_api = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
+        github_request("POST", comment_api, token, json_data={"body": comment})
+
+    print(f"Done. Issue: {issue_url}")
 
 if __name__ == "__main__":
     main()
