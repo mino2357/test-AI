@@ -171,20 +171,31 @@ MATH_PATTERNS = [
     re.compile(r"\\\[(.+?)\\\]", re.DOTALL),          # \[ ... \]
 ]
 
-def extract_first_math(tex: str) -> str:
-    """抄録中の最初の数式を抽出（display 優先）。返り値は $$...$$ で包む。"""
-    if not tex: return ""
-    for pat in (MATH_PATTERNS[0], MATH_PATTERNS[3]):  # display 優先
-        m = pat.search(tex)
-        if m:
-            body = m.group(1).strip()
-            return f"$$\n{body}\n$$"
-    for pat in (MATH_PATTERNS[1], MATH_PATTERNS[2]):  # inline
-        m = pat.search(tex)
-        if m:
-            body = m.group(1).strip()
-            return f"$$\n{body}\n$$"
-    return ""
+def extract_main_math(tex: str) -> str:
+    """抄録中から情報量の多い数式（文字数最大）を抽出。返り値は $$...$$ で包む。"""
+    if not tex:
+        return ""
+
+    candidates = []
+    # display 数式を優先的に収集
+    for pat in (MATH_PATTERNS[0], MATH_PATTERNS[3]):
+        for m in pat.finditer(tex):
+            candidates.append(m.group(1).strip())
+
+    # display が見つからなければ inline
+    if not candidates:
+        for pat in (MATH_PATTERNS[1], MATH_PATTERNS[2]):
+            for m in pat.finditer(tex):
+                candidates.append(m.group(1).strip())
+
+    if not candidates:
+        return ""
+
+    def info_len(s: str) -> int:
+        return len(re.sub(r"\s+", "", s))
+
+    best = max(candidates, key=info_len)
+    return f"$$\n{best}\n$$"
 
 def rule_based_summary(abstract: str):
     """(tldr, key_math) を返す。"""
@@ -192,7 +203,7 @@ def rule_based_summary(abstract: str):
     keys = keyword_pick(abstract, k=6)
     if keys:
         tldr = (tldr + "\n" + f"Keywords: {keys}").strip()
-    key_math = extract_first_math(abstract)
+    key_math = extract_main_math(abstract)
     return tldr, key_math
 
 # ---------- Issue layout ----------
@@ -234,7 +245,6 @@ def build_issue_body(entries, date_str: str):
     out.append(f"# arXiv NA digest — {date_str} (UTC)")
     out.append("")
     out.append(f"- 件数: **{len(entries)}**")
-    out.append("- チェック: ☐ skim ☐ read ☐ cite")
     out.append("")
 
     # 追加: “全てのタイトル＋リンク” セクション（常に先頭に配置）
@@ -261,14 +271,14 @@ def build_issue_body(entries, date_str: str):
         out.append("")
 
         details = []
-        details.append("<details><summary>Abstract & Summary（クリックで展開）</summary>\n")
+        details.append("<details><summary>Abstract & Summary（クリックで展開）</summary>\n\n")
         if tldr:
             details.append(f"**TL;DR**\n\n{tldr}\n")
         if abstract_raw:
             details.append("**Abstract (from arXiv)**\n")
             details.append(abstract_raw.strip() + "\n")
         if key_math:
-            details.append("**Key formula**\n")
+            details.append("**Key formula**\n\n")
             details.append(key_math + "\n")
         details.append("</details>\n")
         out.append("\n".join(details))
