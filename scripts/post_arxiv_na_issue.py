@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os, sys, time, textwrap, html, re, json
-import urllib.request, urllib.parse
+import urllib.request, urllib.parse, urllib.error
 from types import SimpleNamespace
 from datetime import datetime, timezone, timedelta
 from typing import List
@@ -31,14 +31,18 @@ def github_request(method: str, url: str, token: str, json_data=None):
         data_bytes = json.dumps(json_data).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method.upper())
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        status = resp.getcode()
-        body = resp.read().decode()
-        if status >= 300:
-            raise RuntimeError(f"GitHub API error {status}: {body}")
-        if status == 204:
-            return {}
-        return json.loads(body)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            status = resp.getcode()
+            body = resp.read().decode()
+    except urllib.error.HTTPError as e:
+        status = e.code
+        body = e.read().decode()
+    if status >= 300:
+        raise RuntimeError(f"GitHub API error {status}: {body}")
+    if status == 204:
+        return {}
+    return json.loads(body)
 
 # ---------- arXiv fetch & parse ----------
 
@@ -288,15 +292,42 @@ def build_issue_body(entries, date_str: str):
 # ---------- Issue upsert ----------
 
 def find_issue_by_title(repo: str, token: str, title: str):
-    url = f"https://api.github.com/repos/{repo}/issues?state=all&per_page=50"
-    data = github_request("GET", url, token)
-    for it in data:
-        if it.get("title") == title and "pull_request" not in it:
-            return it
-    return None
+    """Return the issue dict matching *title* if it exists.
+
+    The repository might have many issues/PRs, so iterate through pages
+    instead of only checking the first page. Stops after a page returns
+    fewer than 1 item (i.e., end of results).
+    """
+    page = 1
+    while True:
+        url = f"https://api.github.com/repos/{repo}/issues?state=all&per_page=100&page={page}"
+        data = github_request("GET", url, token)
+        if not data:
+            return None
+        for it in data:
+            if it.get("title") == title and "pull_request" not in it:
+                return it
+        page += 1
+
+def ensure_labels_exist(repo: str, token: str, labels):
+    for name in labels:
+        url = f"https://api.github.com/repos/{repo}/labels/{urllib.parse.quote(name)}"
+        try:
+            github_request("GET", url, token)
+        except RuntimeError as e:
+            if "404" in str(e):
+                github_request(
+                    "POST",
+                    f"https://api.github.com/repos/{repo}/labels",
+                    token,
+                    json_data={"name": name, "color": "c5def5"},
+                )
+            else:
+                raise
 
 def create_or_update_issue(repo: str, token: str, title: str, body: str, labels=None):
     labels = labels or []
+    ensure_labels_exist(repo, token, labels)
     existing = find_issue_by_title(repo, token, title)
     if existing:
         issue_url = existing["url"]
