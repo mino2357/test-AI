@@ -360,13 +360,11 @@ def main():
     title = f"arXiv NA - {target_date}"
     issue_url, issue_number = create_or_update_issue(repo, token, title, body, labels=LABELS)
 
-    run_id = os.environ.get("GITHUB_RUN_ID")
-    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-    if run_id:
-        run_url = f"{server}/{repo}/actions/runs/{run_id}"
-        comment = f"Workflow run: {run_url}"
-        comment_api = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
-        github_request("POST", comment_api, token, json_data={"body": comment})
+    gh_output = os.environ.get("GITHUB_OUTPUT")
+    if gh_output:
+        with open(gh_output, "a", encoding="utf-8") as fh:
+            fh.write(f"issue_number={issue_number}\n")
+            fh.write(f"issue_url={issue_url}\n")￥
 
     print(f"Done. Issue: {issue_url}")
 
