@@ -350,14 +350,9 @@ def main():
         sys.exit(2)
 
     today = today_utc_ymd()
-    target_date = today
-    entries = fetch_entries(target_date)
-    if not entries:
-        target_date = iso_ymd(datetime.now(timezone.utc) - timedelta(days=1))
-        entries = fetch_entries(target_date)
-
-    body = build_issue_body(entries, target_date)
-    title = f"arXiv NA - {target_date}"
+    entries = fetch_entries(today)
+    body = build_issue_body(entries, today)
+    title = f"arXiv NA - {today}"
     issue_url, issue_number = create_or_update_issue(repo, token, title, body, labels=LABELS)
 
     gh_output = os.environ.get("GITHUB_OUTPUT")
