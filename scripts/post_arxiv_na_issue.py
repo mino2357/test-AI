@@ -108,6 +108,20 @@ def fetch_entries(target_date: str = None):
         )
     return todays
 
+def fetch_recent_entries(max_days_back: int = 7):
+    """Fetch entries from today or the most recent previous day with results.
+
+    Returns a tuple of (entries, date_str). If no entries are found within
+    *max_days_back*, returns an empty list and today's date.
+    """
+    today = datetime.now(timezone.utc)
+    for delta in range(max_days_back + 1):
+        target_date = iso_ymd(today - timedelta(days=delta))
+        entries = fetch_entries(target_date)
+        if entries:
+            return entries, target_date
+    return [], iso_ymd(today)
+
 def detect_categories(e) -> list:
     cats = []
     for t in getattr(e, "tags", []) or []:
@@ -350,8 +364,8 @@ def main():
         sys.exit(2)
 
     today = today_utc_ymd()
-    entries = fetch_entries(today)
-    body = build_issue_body(entries, today)
+    entries, date_used = fetch_recent_entries()
+    body = build_issue_body(entries, date_used)
     title = f"arXiv NA - {today}"
     issue_url, issue_number = create_or_update_issue(repo, token, title, body, labels=LABELS)
 
