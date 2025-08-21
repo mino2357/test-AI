@@ -4,7 +4,7 @@
 import os, sys, time, textwrap, html, re, json
 import urllib.request, urllib.parse
 from types import SimpleNamespace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List
 import xml.etree.ElementTree as ET
 
@@ -49,8 +49,9 @@ def _parse_arxiv_date(s: str) -> datetime:
         return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
-def fetch_entries():
-    """ submittedDate 降順→ published(UTC) が“今日”のみ採用。重複ID排除。 """
+def fetch_entries(target_date: str = None):
+    """submittedDate 降順→ published(UTC) が target_date のみ採用。重複ID排除。"""
+    target_date = target_date or today_utc_ymd()
     params = {
         "search_query": SEARCH_QUERY,
         "start": 0,
@@ -68,13 +69,12 @@ def fetch_entries():
         xml = resp.read()
     root = ET.fromstring(xml)
     ns = {"atom": "http://www.w3.org/2005/Atom"}
-    today = today_utc_ymd()
     seen = set()
     todays = []
     for node in root.findall("atom:entry", ns):
         pub_text = node.findtext("atom:published", default="", namespaces=ns)
         pub = _parse_arxiv_date(pub_text)
-        if iso_ymd(pub) != today:
+        if iso_ymd(pub) != target_date:
             continue
         eid = node.findtext("atom:id", default="", namespaces=ns).strip()
         if eid and eid in seen:
@@ -171,20 +171,31 @@ MATH_PATTERNS = [
     re.compile(r"\\\[(.+?)\\\]", re.DOTALL),          # \[ ... \]
 ]
 
-def extract_first_math(tex: str) -> str:
-    """抄録中の最初の数式を抽出（display 優先）。返り値は $$...$$ で包む。"""
-    if not tex: return ""
-    for pat in (MATH_PATTERNS[0], MATH_PATTERNS[3]):  # display 優先
-        m = pat.search(tex)
-        if m:
-            body = m.group(1).strip()
-            return f"$$\n{body}\n$$"
-    for pat in (MATH_PATTERNS[1], MATH_PATTERNS[2]):  # inline
-        m = pat.search(tex)
-        if m:
-            body = m.group(1).strip()
-            return f"$$\n{body}\n$$"
-    return ""
+def extract_main_math(tex: str) -> str:
+    """抄録中から情報量の多い数式（文字数最大）を抽出。返り値は $$...$$ で包む。"""
+    if not tex:
+        return ""
+
+    candidates = []
+    # display 数式を優先的に収集
+    for pat in (MATH_PATTERNS[0], MATH_PATTERNS[3]):
+        for m in pat.finditer(tex):
+            candidates.append(m.group(1).strip())
+
+    # display が見つからなければ inline
+    if not candidates:
+        for pat in (MATH_PATTERNS[1], MATH_PATTERNS[2]):
+            for m in pat.finditer(tex):
+                candidates.append(m.group(1).strip())
+
+    if not candidates:
+        return ""
+
+    def info_len(s: str) -> int:
+        return len(re.sub(r"\s+", "", s))
+
+    best = max(candidates, key=info_len)
+    return f"$$\n{best}\n$$"
 
 def rule_based_summary(abstract: str):
     """(tldr, key_math) を返す。"""
@@ -192,7 +203,7 @@ def rule_based_summary(abstract: str):
     keys = keyword_pick(abstract, k=6)
     if keys:
         tldr = (tldr + "\n" + f"Keywords: {keys}").strip()
-    key_math = extract_first_math(abstract)
+    key_math = extract_main_math(abstract)
     return tldr, key_math
 
 # ---------- Issue layout ----------
@@ -219,10 +230,9 @@ def build_full_list_section(entries):
     lines.append("")  # 末尾空行
     return "\n".join(lines)
 
-def build_issue_body(entries):
-    today = today_utc_ymd()
+def build_issue_body(entries, date_str: str):
     if not entries:
-        return f"**Date (UTC)**: {today}\n\n本日の math.NA / cs.NA 新着は見つかりませんでした。"
+        return f"**Date (UTC)**: {date_str}\n\n本日の math.NA / cs.NA 新着は見つかりませんでした。"
 
     # math.NA を先に
     def sort_key(e):
@@ -232,10 +242,9 @@ def build_issue_body(entries):
     entries = sorted(entries, key=sort_key)
 
     out = []
-    out.append(f"# arXiv NA digest — {today} (UTC)")
+    out.append(f"# arXiv NA digest — {date_str} (UTC)")
     out.append("")
     out.append(f"- 件数: **{len(entries)}**")
-    out.append("- チェック: ☐ skim ☐ read ☐ cite")
     out.append("")
 
     # 追加: “全てのタイトル＋リンク” セクション（常に先頭に配置）
@@ -262,14 +271,14 @@ def build_issue_body(entries):
         out.append("")
 
         details = []
-        details.append("<details><summary>Abstract & Summary（クリックで展開）</summary>\n")
+        details.append("<details><summary>Abstract & Summary（クリックで展開）</summary>\n\n")
         if tldr:
             details.append(f"**TL;DR**\n\n{tldr}\n")
         if abstract_raw:
             details.append("**Abstract (from arXiv)**\n")
             details.append(abstract_raw.strip() + "\n")
         if key_math:
-            details.append("**Key formula**\n")
+            details.append("**Key formula**\n\n")
             details.append(key_math + "\n")
         details.append("</details>\n")
         out.append("\n".join(details))
@@ -309,9 +318,15 @@ def main():
         print("GITHUB_REPOSITORY / GITHUB_TOKEN が未設定です。GitHub Actions で実行してください。", file=sys.stderr)
         sys.exit(2)
 
-    entries = fetch_entries()
-    body = build_issue_body(entries)
-    title = f"arXiv NA - {today_utc_ymd()}"
+    today = today_utc_ymd()
+    target_date = today
+    entries = fetch_entries(target_date)
+    if not entries:
+        target_date = iso_ymd(datetime.now(timezone.utc) - timedelta(days=1))
+        entries = fetch_entries(target_date)
+
+    body = build_issue_body(entries, target_date)
+    title = f"arXiv NA - {target_date}"
     url = create_or_update_issue(repo, token, title, body, labels=LABELS)
     print(f"Done. Issue: {url}")
 
